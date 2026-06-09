@@ -21,18 +21,13 @@
 ![Star -> Fork -> Download 流程示意图](./Mobile/demo.png)
 
 1. **⭐ Star**  
-   点击本仓库右上角的 **Star** 按钮，支持本项目（方便你下次快速找到）。
+   点击本仓库右上角的 **Star** 按钮，申请自己的使用权限。
 
 2. **⑂ Fork**  
-   点击 **Fork** 按钮，将本仓库复制到你自己的 GitHub 账号下，以便自由修改和实验。
+   点击 **Fork** 按钮，将本仓库复制到你自己的 GitHub 账号下，不然无法进行修改。
 
 3. **⬇️ Download**  
-   - **方式一（推荐）**：在你自己 Fork 后的仓库页面，点击 **Code → Download ZIP** 下载压缩包。  
-   - **方式二（命令行）**：  
-     ```bash
-     git clone https://github.com/你的用户名/DeltaForce-OBS-Locker.git
-     ```  
-   - **方式三（仅手机端 APK）**：使用手机端 README 中的 Python 脚本下载 APK，或通过 Releases 获取。
+   在你自己 Fork 后的仓库页面，点击 **Code → Download ZIP** 下载压缩包。  
 
 > 💡 **电脑端** 代码位于 `desktop/` 文件夹，**手机端** 脚本位于 `mobile/` 文件夹。下载后请根据对应子项目的 README 进行操作。
 
