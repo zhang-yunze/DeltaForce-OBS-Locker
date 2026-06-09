@@ -1,6 +1,4 @@
-以下是 `desktop/README.md` 的完整内容，可直接复制使用。
 
-```markdown
 # DeltaForce-OBS-Locker —— 手把手教学（电脑端）
 
 > 📘 **这是一份完整的 Python 编程 & 计算机视觉实战教程**  
