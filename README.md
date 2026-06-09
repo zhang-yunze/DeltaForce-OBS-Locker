@@ -9,11 +9,14 @@
 
 ## 🎥 手机端功能演示视频
 
-以下视频展示手机端 APK 的核心效果（画面吸附 / 模拟输入演示）：
+点击下方链接观看或下载演示视频（手机端 APK 效果展示）：
 
-<video src="./Mobile/demo_video.mp4" controls width="600"></video>
+- **直接下载视频**： [`demo_video.mp4`](https://github.com/ace-trump-tech/DeltaForce-OBS-Locker/raw/main/Mobile/demo_video.mp4) （右键另存为）
+- **在线播放**（建议下载后播放，GitHub 不支持直接嵌入）：
 
-*如果视频无法播放，请直接下载 [`./Mobile/demo_video.mp4`](./Mobile/demo_video.mp4) 到本地观看。*
+[![视频预览]（可自行添加封面图）](https://github.com/ace-trump-tech/DeltaForce-OBS-Locker/raw/main/Mobile/demo_video.mp4)
+
+*如果无法播放，请直接下载到本地，使用本地播放器打开。*
 
 ---
 
@@ -28,6 +31,17 @@
 
 > 💡 **电脑端** 提供从零开始的 Python 编程实战教程，覆盖环境配置、图像识别、模拟输入、反检测技巧等；  
 > **手机端** 提供一个简单的 Python 脚本，用于从 Hugging Face 自动下载 `Locker_Android.apk`（约 60 MB）。
+
+---
+
+## 📚 完整教程与参考
+
+- **[三角洲行动腾讯管家吸附原理 & 本项目 v3 版本介绍（CSDN）](https://blog.csdn.net/qq_63129682/article/details/161447283)** —— 电脑端核心原理、技术演进与演示效果图文详解。  
+  *注：若链接失效，请前往 [电脑端 README](./desktop/README.md) 查看内置教程。*
+- **[Python 环境部署教程（必读）](https://blog.csdn.net/qq_63129682/article/details/161460238)** —— 从零安装 Python、配置虚拟环境、解决常见问题。  
+  *注：若链接失效，请参考 [电脑端 README](./desktop/README.md) 中的环境配置部分。*
+
+👉 更详细的分步教程、代码结构解析和常见问题，请阅读 **[电脑端 README](./desktop/README.md)**。
 
 ---
 
