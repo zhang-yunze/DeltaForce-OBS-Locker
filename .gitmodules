@@ -1,3 +1,8 @@
 [submodule "Desktop"]
 	path = Desktop
-	url = https://github.com/ace-trump-tech/DeltaForce-Desktop.git
+	url = https://github.com/ace-trump-tech/DeltaForce-Locker.git
+	branch = desktop
+[submodule "Mobile"]
+	path = Mobile
+	url = https://github.com/ace-trump-tech/DeltaForce-Locker.git
+	branch = mobile
