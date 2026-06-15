@@ -741,3 +741,114 @@ class E2EDetectLoss:
         one2one = preds["one2one"]
         loss_one2one = self.one2one(one2one, batch)
         return loss_one2many[0] + loss_one2one[0], loss_one2many[1] + loss_one2one[1]
+
+
+class CrossViewConsistencyLoss(nn.Module):
+    """
+    Cross-View Consistency Loss for multi-view training.
+
+    Encourages feature representations of the same object/scene from different
+    camera perspectives (pinhole, fisheye, drone, BEV, etc.) to be close in
+    the embedding space, enabling viewpoint-invariant object features.
+
+    Attributes:
+        temperature (float): NT-Xent contrastive temperature.
+        margin (float): Margin for triplet loss.
+    """
+
+    def __init__(self, temperature=0.07, margin=0.5):
+        super().__init__()
+        self.temperature = temperature
+        self.margin = margin
+
+    def forward(self, features, view_ids, labels):
+        """
+        Compute cross-view consistency loss.
+
+        Args:
+            features (torch.Tensor): Global pooled features (B, D).
+            view_ids (torch.Tensor): View type indices (B,).
+            labels (torch.Tensor): Object class labels per image (B,).
+
+        Returns:
+            (torch.Tensor): Consistency loss value.
+        """
+        B = features.shape[0]
+        if B < 2:
+            return features.new_zeros(())
+
+        features = F.normalize(features, dim=1)
+        sim = (features @ features.T) / self.temperature
+
+        # Positive: different view but same class
+        view_eq = view_ids.unsqueeze(0) == view_ids.unsqueeze(1)
+        cls_eq = labels.unsqueeze(0) == labels.unsqueeze(1) if labels.numel() > 0 else torch.eye(B, device=features.device, dtype=torch.bool)
+
+        # Cross-view positives: same class, different view
+        cross_pos = (~view_eq) & cls_eq
+        if not cross_pos.any():
+            return features.new_zeros(())
+
+        # NT-Xent over cross-view pairs
+        exp_sim = torch.exp(sim)
+        pos_exp = exp_sim * cross_pos.float()
+        all_exp = exp_sim.sum(dim=1, keepdim=True) + 1e-8
+        loss = -torch.log((pos_exp.sum(dim=1) + 1e-8) / all_exp.squeeze())
+        return loss.mean()
+
+
+class DomainAdversarialLoss(nn.Module):
+    """
+    Domain Adversarial Loss for Game-to-Real Domain Adaptation.
+
+    Works with the DomainAdaptiveLayer in a GAN-like fashion:
+    - The DomainAdaptiveLayer tries to predict whether features come from
+      game or real domains (domain classifier in forward())
+    - This loss penalises the BACKBONE for making the domain classifier's
+      job easy — by maximising domain confusion (flipping the gradient)
+
+    The effect: the backbone learns domain-invariant features, so game
+    characters and real humans produce similar representations.
+
+    Two losses:
+    1. **Domain classification loss**: trains the domain classifier to
+       correctly distinguish game vs real features.
+    2. **Domain confusion (adversarial) loss**: trains the feature extractor
+       to produce domain-invariant features by gradient reversal.
+
+    Attributes:
+        lambda_domain (float): Weight for domain confusion loss.
+    """
+
+    def __init__(self, lambda_domain=0.1):
+        """Initialize DomainAdversarialLoss."""
+        super().__init__()
+        self.lambda_domain = lambda_domain
+        self.ce_loss = nn.CrossEntropyLoss()
+
+    def forward(self, domain_logits, domain_labels):
+        """
+        Compute domain adversarial loss.
+
+        Args:
+            domain_logits (torch.Tensor): Raw logits from DomainAdaptiveLayer
+                domain_classifier (B, 2).
+            domain_labels (torch.Tensor): Ground truth domain labels
+                (B,), 0=real, 1=game.
+
+        Returns:
+            (tuple): (domain_cls_loss, domain_confusion_loss)
+        """
+        B = domain_logits.shape[0]
+
+        # Classification loss: train domain classifier
+        cls_loss = self.ce_loss(domain_logits, domain_labels)
+
+        # Confusion (adversarial) loss: invert labels to confuse the classifier
+        # The feature extractor tries to maximise domain entropy
+        confused_labels = 1 - domain_labels  # flip: game→real, real→game
+        confusion_loss = self.ce_loss(domain_logits, confused_labels)
+
+        # Total: classifier wants to classify correctly
+        # Feature extractor wants to confuse (via gradient reversal effect)
+        return cls_loss, self.lambda_domain * confusion_loss

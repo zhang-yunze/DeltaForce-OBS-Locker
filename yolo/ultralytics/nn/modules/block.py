@@ -50,6 +50,14 @@ __all__ = (
     "PSA",
     "SCDown",
     "TorchVision",
+    "A2C2f",
+    "DeformableAAttn",
+    "DeformableABlock",
+    "DeformableA2C2f",
+    "ViewEmbedding",
+    "DynamicScaleRouter",
+    "SphereAAttn",
+    "DomainAdaptiveLayer",
 )
 
 
@@ -1367,3 +1375,275 @@ class A2C2f(nn.Module):
         if self.gamma is not None:
             return x + self.gamma.view(1, -1, 1, 1) * self.cv2(torch.cat(y, 1))
         return self.cv2(torch.cat(y, 1))
+
+
+class DeformableAAttn(nn.Module):
+    """
+    Deformable Area-Attention (D-AAttn).
+    Extends standard AAttn with learnable offset that warps the feature
+    grid before area-attention, adapting to geometric distortions.
+    """
+
+    def __init__(self, dim, num_heads, area=1):
+        super().__init__()
+        self.area = area
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        all_head_dim = self.head_dim * self.num_heads
+
+        self.qk = Conv(dim, all_head_dim * 2, 1, act=False)
+        self.v = Conv(dim, all_head_dim, 1, act=False)
+        self.proj = Conv(all_head_dim, dim, 1, act=False)
+        self.pe = Conv(all_head_dim, dim, 5, 1, 2, g=dim, act=False)
+
+        self.offset_conv = nn.Sequential(
+            nn.Conv2d(dim, max(8, dim // 8), 3, 1, 1, bias=False),
+            nn.BatchNorm2d(max(8, dim // 8)),
+            nn.SiLU(),
+            nn.Conv2d(max(8, dim // 8), 2, 3, 1, 1, bias=True),
+        )
+        nn.init.constant_(self.offset_conv[-1].weight, 0.0)
+        nn.init.constant_(self.offset_conv[-1].bias, 0.0)
+
+    def forward(self, x):
+        """Apply deformable area-attention."""
+        B, C, H, W = x.shape
+        N = H * W
+        device = x.device
+        offset = self.offset_conv(x)
+        y_g, x_g = torch.meshgrid(
+            torch.arange(H, device=device, dtype=torch.float32),
+            torch.arange(W, device=device, dtype=torch.float32),
+            indexing="ij",
+        )
+        sample_y = y_g.unsqueeze(0) + offset[:, 0, :, :]
+        sample_x = x_g.unsqueeze(0) + offset[:, 1, :, :]
+        norm_y = 2.0 * sample_y / max(H - 1, 1) - 1.0
+        norm_x = 2.0 * sample_x / max(W - 1, 1) - 1.0
+        grid = torch.stack((norm_x, norm_y), dim=-1)
+
+        qk = self.qk(x)
+        v = self.v(x)
+        pp = self.pe(v)
+        qk = F.grid_sample(qk, grid, mode="bilinear", padding_mode="zeros", align_corners=False)
+        v = F.grid_sample(v, grid, mode="bilinear", padding_mode="zeros", align_corners=False)
+        qk = qk.flatten(2).transpose(1, 2)
+        v = v.flatten(2).transpose(1, 2)
+
+        if self.area > 1:
+            qk = qk.reshape(B * self.area, N // self.area, C * 2)
+            v = v.reshape(B * self.area, N // self.area, C)
+            B_a, N_a, _ = qk.shape
+        else:
+            B_a, N_a = B, N
+
+        q, k = qk.split([C, C], dim=2)
+        q = q.transpose(1, 2).view(B_a, self.num_heads, self.head_dim, N_a)
+        k = k.transpose(1, 2).view(B_a, self.num_heads, self.head_dim, N_a)
+        v = v.transpose(1, 2).view(B_a, self.num_heads, self.head_dim, N_a)
+        attn = (q.transpose(-2, -1) @ k) * (self.head_dim ** -0.5)
+        attn = torch.softmax(attn, dim=-1)
+        x_out = (v @ attn.transpose(-2, -1))
+        x_out = x_out.permute(0, 3, 1, 2).reshape(B_a, N_a, C)
+
+        if self.area > 1:
+            x_out = x_out.reshape(B // self.area, N * self.area, C)
+        x_out = x_out.reshape(B, H, W, C).permute(0, 3, 1, 2)
+        return self.proj(x_out + pp)
+
+
+class DeformableABlock(nn.Module):
+    """Area-Attention block with deformable sampling + MLP."""
+
+    def __init__(self, dim, num_heads, mlp_ratio=1.2, area=1):
+        super().__init__()
+        self.attn = DeformableAAttn(dim, num_heads=num_heads, area=area)
+        mlp_hid = int(dim * mlp_ratio)
+        self.mlp = nn.Sequential(Conv(dim, mlp_hid, 1), Conv(mlp_hid, dim, 1, act=False))
+
+    def forward(self, x):
+        return x + self.mlp(x + self.attn(x))
+
+
+class DeformableA2C2f(nn.Module):
+    """R-ELAN with Deformable Area-Attention blocks."""
+
+    def __init__(self, c1, c2, n=1, a2=True, area=1, residual=False, mlp_ratio=2.0, e=0.5, g=1, shortcut=True):
+        super().__init__()
+        c_ = int(c2 * e)
+        assert c_ % 32 == 0
+        num_heads = c_ // 32
+        self.cv1 = Conv(c1, c_, 1, 1)
+        self.cv2 = Conv((1 + n) * c_, c2, 1)
+        self.gamma = nn.Parameter(0.01 * torch.ones(c2), requires_grad=True) if residual else None
+        self.m = nn.ModuleList(
+            nn.Sequential(*(DeformableABlock(c_, num_heads, mlp_ratio, area) for _ in range(2)))
+            for _ in range(n)
+        )
+
+    def forward(self, x):
+        y = [self.cv1(x)]
+        y.extend(m(y[-1]) for m in self.m)
+        out = self.cv2(torch.cat(y, 1))
+        return x + self.gamma.view(1, -1, 1, 1) * out if self.gamma is not None else out
+
+
+class ViewEmbedding(nn.Module):
+    """Multi-View Conditioning: injects view-type embedding into feature maps."""
+
+    VIEW_TYPES = {"pinhole": 0, "fisheye": 1, "panoramic": 2, "drone": 3, "bev": 4, "ground": 5}
+
+    def __init__(self, c1, num_views=6, embed_dim=64):
+        super().__init__()
+        self.view_embed = nn.Embedding(num_views, embed_dim)
+        self.proj = Conv(c1 + embed_dim, c1, 1)
+
+    def forward(self, x, view_ids=None):
+        B, C, H, W = x.shape
+        if view_ids is None:
+            view_ids = x.new_zeros(B, dtype=torch.long)
+        emb = self.view_embed(view_ids).view(B, -1, 1, 1).expand(-1, -1, H, W)
+        return self.proj(torch.cat([x, emb], dim=1))
+
+
+class DynamicScaleRouter(nn.Module):
+    """Adaptive Resolution Pyramid: learns per-input scale importance."""
+
+    def __init__(self, feat_channels=(256, 512, 1024), reduction=16):
+        super().__init__()
+        self.gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1), nn.Flatten(),
+            nn.Linear(sum(feat_channels), max(16, sum(feat_channels) // reduction)),
+            nn.SiLU(),
+            nn.Linear(max(16, sum(feat_channels) // reduction), len(feat_channels)),
+        )
+
+    def forward(self, features):
+        ctx = torch.cat([F.adaptive_avg_pool2d(f, 1).flatten(1) for f in features], dim=1)
+        return F.softmax(self.gate(ctx), dim=-1)
+
+
+class SphereAAttn(nn.Module):
+    """Spherical Area-Attention for 360° panoramic images."""
+
+    def __init__(self, dim, num_heads, lat_bands=4):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        ahd = self.head_dim * self.num_heads
+        self.lat_bands = lat_bands
+        self.qk = Conv(dim, ahd * 2, 1, act=False)
+        self.v = Conv(dim, ahd, 1, act=False)
+        self.proj = Conv(ahd, dim, 1, act=False)
+        self.pe = Conv(ahd, dim, 5, 1, 2, g=dim, act=False)
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        N = H * W
+        qk = self.qk(x).flatten(2).transpose(1, 2)
+        v = self.v(x)
+        pp = self.pe(v)
+        v = v.flatten(2).transpose(1, 2)
+
+        bs = H // self.lat_bands
+        bq, bv = [], []
+        for b in range(self.lat_bands):
+            hs = b * bs
+            he = H if b == self.lat_bands - 1 else (b + 1) * bs
+            bq.append(qk[:, hs * W:he * W, :])
+            bv.append(v[:, hs * W:he * W, :])
+        qk, v = torch.cat(bq, dim=1), torch.cat(bv, dim=1)
+
+        q, k = qk.split([C, C], dim=2)
+        q = q.transpose(1, 2).view(B, self.num_heads, self.head_dim, N)
+        k = k.transpose(1, 2).view(B, self.num_heads, self.head_dim, N)
+        v = v.transpose(1, 2).view(B, self.num_heads, self.head_dim, N)
+        attn = torch.softmax((q.transpose(-2, -1) @ k) * (self.head_dim ** -0.5), dim=-1)
+        x_out = (v @ attn.transpose(-2, -1))
+        x_out = x_out.permute(0, 3, 1, 2).reshape(B, N, C).reshape(B, H, W, C).permute(0, 3, 1, 2)
+        return self.proj(x_out + pp)
+
+
+class DomainAdaptiveLayer(nn.Module):
+    """
+    Game-to-Real Domain Adaptation Layer.
+
+    Uses Adaptive Instance Normalization (AdaIN) to align feature distributions
+    between game-rendered and real-photographic domains. This allows the model
+    to extract domain-invariant features — a game character and a real person
+    produce similar feature representations.
+
+    How it works:
+    1. A lightweight domain predictor estimates game-vs-real from features
+    2. AdaIN shifts the feature statistics (mean/std) of game features
+       toward the real-domain distribution
+    3. A domain confusion loss (adversarial) further aligns distributions
+
+    This is placed in the backbone after early conv layers, so downstream
+    A2C2f/Detect heads see domain-aligned features.
+
+    Attributes:
+        c (int): Channel dimension.
+    """
+
+    def __init__(self, c1, c2=None):
+        """Initialize DomainAdaptiveLayer with AdaIN and domain predictor."""
+        super().__init__()
+        c = c1 if c2 is None else c2
+
+        # Domain classifier (predicts game vs real from feature stats)
+        self.domain_classifier = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(c, max(16, c // 16)),
+            nn.ReLU(),
+            nn.Linear(max(16, c // 16), 2),  # 0=real, 1=game
+        )
+
+        # Learned affine transform for AdaIN (game→real alignment)
+        self.gamma = nn.Parameter(torch.ones(c))
+        self.beta = nn.Parameter(torch.zeros(c))
+
+    @staticmethod
+    def _instance_norm(x):
+        """Compute per-instance mean and std."""
+        B, C, H, W = x.shape
+        x_flat = x.view(B, C, -1)
+        mean = x_flat.mean(dim=2, keepdim=True).view(B, C, 1, 1)
+        std = x_flat.std(dim=2, keepdim=True).view(B, C, 1, 1) + 1e-8
+        return mean, std
+
+    @staticmethod
+    def _adain(content_feat, gamma, beta, eps=1e-8):
+        """Adaptive Instance Normalisation with learned affine params."""
+        B, C, H, W = content_feat.shape
+        content_flat = content_feat.view(B, C, -1)
+        mean = content_flat.mean(dim=2, keepdim=True).view(B, C, 1, 1)
+        std = content_flat.std(dim=2, keepdim=True).view(B, C, 1, 1) + eps
+        normalized = (content_feat - mean) / std
+        return normalized * gamma.view(1, C, 1, 1) + beta.view(1, C, 1, 1)
+
+    def forward(self, x):
+        """
+        Forward pass with game→real domain adaptation.
+
+        Predicts domain from features, applies AdaIN for game samples,
+        stores domain logits for adversarial loss computation.
+        """
+        B, C, H, W = x.shape
+
+        # Predict domain from feature statistics
+        domain_logits = self.domain_classifier(x)
+        domain_probs = F.softmax(domain_logits, dim=1)
+        game_conf = domain_probs[:, 1]
+
+        # Apply AdaIN adaptation with smooth blending
+        x_adapted = self._adain(x, self.gamma, self.beta)
+        mask = game_conf.view(B, 1, 1, 1).expand(-1, C, H, W).sigmoid()
+        x_out = (1 - mask) * x + mask * x_adapted
+
+        # Store for external loss access
+        self._domain_logits = domain_logits
+        self._domain_probs = domain_probs
+
+        return x_out

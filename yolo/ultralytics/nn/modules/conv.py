@@ -6,6 +6,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 __all__ = (
     "Conv",
@@ -22,6 +23,8 @@ __all__ = (
     "Concat",
     "RepConv",
     "Index",
+    "DeformableConv",
+    "CircularConv",
 )
 
 
@@ -348,3 +351,110 @@ class Index(nn.Module):
         Expects a list of tensors as input.
         """
         return x[self.index]
+
+
+class DeformableConv(nn.Module):
+    """
+    Efficient Deformable Convolution (Pure PyTorch).
+
+    Learns a dense deformation field to warp the input feature map before
+    applying standard convolution. This allows the network to adaptively
+    compensate for geometric distortions (fisheye, wide-angle lens,
+    perspective changes) at each layer.
+
+    Unlike DCNv2/v3/v4 which learn per-kernel-element offsets, this
+    uses a simpler but effective dense-warp-then-convolve approach,
+    keeping FLOPs low while still learning adaptive geometry.
+
+    Attributes:
+        c1 (int): Input channels.
+        c2 (int): Output channels.
+        k (int): Kernel size.
+        s (int): Stride.
+    """
+
+    def __init__(self, c1, c2, k=3, s=1, p=1, g=1, act=True):
+        """Initialize DeformableConv with learnable deformation field."""
+        super().__init__()
+        self.g = g
+
+        # Offset field: learns dense 2D offset map (dx, dy per pixel)
+        # Small network to predict deformation from input features
+        self.offset_net = nn.Sequential(
+            nn.Conv2d(c1, max(8, c1 // 4), 3, 1, 1, bias=False),
+            nn.BatchNorm2d(max(8, c1 // 4)),
+            nn.SiLU(),
+            nn.Conv2d(max(8, c1 // 4), 2, 3, 1, 1, bias=True),
+        )
+        # Zero-init so initial behavior is identity (no deformation)
+        nn.init.constant_(self.offset_net[-1].weight, 0.0)
+        nn.init.constant_(self.offset_net[-1].bias, 0.0)
+
+        self.conv = nn.Conv2d(c1, c2, k, s, p, groups=g, bias=False)
+        self.bn = nn.BatchNorm2d(c2)
+        self.act = Conv.default_act if act is True else act if isinstance(act, nn.Module) else nn.Identity()
+
+    def forward(self, x):
+        """Apply deformation then standard convolution."""
+        # Predict dense offset field
+        offset = self.offset_net(x)  # (B, 2, H, W)
+        B, C, H, W = x.shape
+
+        # Create normalised sampling grid
+        y, x_g = torch.meshgrid(
+            torch.arange(H, device=x.device, dtype=torch.float32),
+            torch.arange(W, device=x.device, dtype=torch.float32),
+            indexing="ij",
+        )
+        # Add predicted offset
+        off_y = offset[:, 0, :, :]  # (B, H, W)
+        off_x = offset[:, 1, :, :]
+        sample_y = y.unsqueeze(0) + off_y
+        sample_x = x_g.unsqueeze(0) + off_x
+
+        # Normalize to [-1, 1]
+        norm_y = 2.0 * sample_y / max(H - 1, 1) - 1.0
+        norm_x = 2.0 * sample_x / max(W - 1, 1) - 1.0
+        grid = torch.stack((norm_x, norm_y), dim=-1)  # (B, H, W, 2)
+
+        # Warp input feature map
+        warped = F.grid_sample(x, grid, mode="bilinear", padding_mode="zeros", align_corners=False)
+
+        # Standard convolution on warped features
+        return self.act(self.bn(self.conv(warped)))
+
+
+class CircularConv(nn.Module):
+    """
+    Circular (wrap-around) convolution for 360° panoramic images.
+
+    Uses circular padding horizontally so the left and right edges of a
+    panorama are connected, ensuring continuous feature extraction across
+    the 0°/360° boundary.
+
+    Attributes:
+        c1 (int): Input channels.
+        c2 (int): Output channels.
+        k (int): Kernel size (horizontal wrap uses circular padding).
+        s (int): Stride.
+    """
+
+    def __init__(self, c1, c2, k=3, s=1, p=None, g=1, act=True):
+        """Initialize CircularConv with standard params + circular horizontal padding."""
+        super().__init__()
+        self.k = k
+        self.s = s
+        self.g = g
+        if p is None:
+            p = k // 2
+        self.pad_w = p
+        self.pad_h = 0 if k // 2 == 0 else k // 2
+        self.conv = nn.Conv2d(c1, c2, k, s, padding=(0, 0), groups=g, bias=False)
+        self.bn = nn.BatchNorm2d(c2)
+        self.act = Conv.default_act if act is True else act if isinstance(act, nn.Module) else nn.Identity()
+
+    def forward(self, x):
+        """Apply circular padding horizontally, then standard conv."""
+        # Circular pad on width (horizontal wrap), zero pad on height
+        x = F.pad(x, (self.pad_w, self.pad_w, self.pad_h, self.pad_h), mode="circular")
+        return self.act(self.bn(self.conv(x)))

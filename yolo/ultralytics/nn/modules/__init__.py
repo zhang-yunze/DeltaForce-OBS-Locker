@@ -58,6 +58,13 @@ from .block import (
     SCDown,
     TorchVision,
     A2C2f,
+    DeformableAAttn,
+    DeformableABlock,
+    DeformableA2C2f,
+    ViewEmbedding,
+    DynamicScaleRouter,
+    SphereAAttn,
+    DomainAdaptiveLayer,
 )
 from .conv import (
     CBAM,
@@ -74,6 +81,8 @@ from .conv import (
     LightConv,
     RepConv,
     SpatialAttention,
+    DeformableConv,
+    CircularConv,
 )
 from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect
 from .transformer import (
@@ -161,5 +170,14 @@ __all__ = (
     "PSA",
     "TorchVision",
     "Index",
-    "A2C2f"
+    "A2C2f",
+    "DeformableConv",
+    "CircularConv",
+    "DeformableAAttn",
+    "DeformableABlock",
+    "DeformableA2C2f",
+    "ViewEmbedding",
+    "DynamicScaleRouter",
+    "SphereAAttn",
+    "DomainAdaptiveLayer",
 )

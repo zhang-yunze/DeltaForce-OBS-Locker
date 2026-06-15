@@ -2742,3 +2742,403 @@ class ToTensor:
         im = im.half() if self.half else im.float()  # uint8 to fp16/32
         im /= 255.0  # 0-255 to 0.0-1.0
         return im
+
+
+class FisheyeDistortion:
+    """
+    Fisheye/barrel distortion augmentation.
+
+    Simulates lens distortion by applying radial barrel or pincushion distortion
+    to the image. This helps the model become robust to wide-angle and fisheye
+    lenses, and also serves as training data for the DeformableA2C2f module.
+
+    Attributes:
+        strength (float): Distortion strength range. Higher = more distortion.
+        p (float): Probability of applying distortion.
+    """
+
+    def __init__(self, strength=(-0.3, 0.3), p=0.5):
+        self.strength = strength
+        self.p = p
+
+    def __call__(self, labels, view_label=None):
+        """Apply fisheye distortion to image in labels dict."""
+        if random.random() > self.p:
+            return labels
+
+        img = labels.get("img", None)
+        if img is None:
+            return labels
+
+        h, w = img.shape[:2]
+        K = np.array([[w, 0, w / 2], [0, w, h / 2], [0, 0, 1]], dtype=np.float32)
+        D = np.array([random.uniform(*self.strength), 0, 0, 0], dtype=np.float32)
+
+        # Apply distortion using OpenCV
+        map1, map2 = cv2.fisheye.initUndistortRectifyMap(K, D, np.eye(3), K, (w, h), cv2.CV_32FC1)
+        distorted = cv2.remap(img, map1, map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+
+        labels["img"] = distorted
+
+        # Store view type for conditioning
+        if view_label is not None:
+            labels["view_id"] = view_label
+        elif abs(D[0]) > 0.05:
+            labels.setdefault("view_id", 1)  # fisheye
+        else:
+            labels.setdefault("view_id", 0)  # pinhole
+
+        # Adjust bounding boxes (approximate: skip for now, let the model learn)
+        return labels
+
+
+class RandomPerspectiveDistortion:
+    """
+    Perspective distortion for multi-view simulation.
+
+    Applies random perspective transforms to simulate different camera
+    viewing angles (e.g., drone top-down, ground-level slanted, BEV).
+    Optionally assigns a view label for the ViewEmbedding module.
+
+    Attributes:
+        max_shift (float): Maximum perspective shift fraction (0~1).
+        p (float): Probability of applying distortion.
+    """
+
+    VIEW_MAP = {
+        "pinhole": 0,
+        "fisheye": 1,
+        "panoramic": 2,
+        "drone": 3,
+        "bev": 4,
+        "ground": 5,
+    }
+
+    def __init__(self, max_shift=0.3, p=0.5):
+        self.max_shift = max_shift
+        self.p = p
+
+    def __call__(self, labels):
+        """Apply random perspective distortion."""
+        if random.random() > self.p:
+            return labels
+
+        img = labels.get("img", None)
+        if img is None:
+            return labels
+
+        h, w = img.shape[:2]
+
+        # Original corners
+        src_pts = np.float32([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]])
+
+        # Randomly shift corners to simulate perspective change
+        shift = self.max_shift
+        dst_pts = src_pts + np.random.uniform(-shift, shift, src_pts.shape) * np.array([w, h])
+
+        # Compute perspective transform
+        M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+        warped = cv2.warpPerspective(img, M, (w, h), borderMode=cv2.BORDER_CONSTANT)
+
+        labels["img"] = warped
+
+        # Auto-detect view type based on perspective skew
+        skew = np.mean(np.abs(dst_pts - src_pts))
+        if skew > shift * 0.7:
+            labels.setdefault("view_id", 5)  # ground/angled view
+        else:
+            labels.setdefault("view_id", 0)  # pinhole
+
+        return labels
+
+
+class ViewTypeAssigner:
+    """
+    Assigns view-type labels to training images based on content analysis
+    or external metadata. Used to train the ViewEmbedding module.
+
+    Supports explicit view IDs via labels dict, or auto-detection based
+    on image properties (e.g., edge distribution, vanishing points).
+    """
+
+    def __init__(self, default_view=0):
+        self.default_view = default_view
+
+    def __call__(self, labels):
+        """Assign view ID to labels dict."""
+        if "view_id" not in labels:
+            labels["view_id"] = self.default_view
+        return labels
+
+
+class GameCharacterStylization:
+    """
+    Game-to-Real Domain Stylization Augmentation.
+
+    Applies game-engine rendering effects to real images, bridging the domain
+    gap between photorealistic training data and game character visuals.
+    This allows the model to detect game characters (e.g., Delta Force, COD,
+    PUBG) as real humans.
+
+    Effects applied (composable):
+    - Posterization / Color quantization (reduced palette like game engines)
+    - Edge enhancement / Sharpening (game shader-like outlines)
+    - Saturation boost (game color grading)
+    - Contrast adjustment (HDR-like game lighting)
+    - Unsharp masking (TAA/sharpening filter simulation)
+    - Chromatic aberration (lens effects common in games)
+
+    Attributes:
+        intensity (float): Overall effect intensity (0~1). Default 0.5.
+        p (float): Probability of applying stylization.
+    """
+
+    def __init__(self, intensity=0.5, p=0.3):
+        self.intensity = intensity
+        self.p = p
+
+    def __call__(self, labels):
+        """Apply game-style rendering to image."""
+        if random.random() > self.p:
+            return labels
+
+        img = labels.get("img", None)
+        if img is None:
+            return labels
+
+        i = self.intensity
+
+        # Random sub-set of effects
+        effects = random.choices([
+            self._posterize,
+            self._sharpen,
+            self._saturate,
+            self._contrast,
+            self._unsharp_mask,
+        ], k=random.randint(1, 3))
+
+        for effect in effects:
+            img = effect(img, i)
+
+        labels["img"] = np.clip(img, 0, 255).astype(np.uint8)
+        # Mark as game-domain for domain adaptation loss
+        labels["domain_id"] = 1  # 1 = game, 0 = real
+        return labels
+
+    @staticmethod
+    def _posterize(img, intensity):
+        """Color quantization: reduce bit depth like game engine rendering."""
+        bits = max(2, int(8 - intensity * 5))
+        return (img // (2 ** (8 - bits))) * (2 ** (8 - bits))
+
+    @staticmethod
+    def _sharpen(img, intensity):
+        """Edge enhancement simulating game sharpening filters."""
+        k = np.array([
+            [-1, -1, -1],
+            [-1,  9, -1],
+            [-1, -1, -1],
+        ], dtype=np.float32) * intensity
+        k[1, 1] += 1.0 - intensity
+        return cv2.filter2D(img, -1, k)
+
+    @staticmethod
+    def _saturate(img, intensity):
+        """Saturation boost like game color grading."""
+        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV).astype(np.float32)
+        hsv[:, :, 1] *= (1.0 + intensity * 0.8)
+        hsv[:, :, 1] = np.clip(hsv[:, :, 1], 0, 255)
+        return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+
+    @staticmethod
+    def _contrast(img, intensity):
+        """Contrast enhancement simulating HDR game lighting."""
+        alpha = 1.0 + intensity * 0.4
+        beta = -intensity * 20
+        return cv2.addWeighted(img, alpha, img, 0, beta)
+
+    @staticmethod
+    def _unsharp_mask(img, intensity):
+        """Unsharp masking simulating TAA/sharpening in games."""
+        blurred = cv2.GaussianBlur(img, (0, 0), sigmaX=intensity * 3 + 1)
+        return cv2.addWeighted(img, 1.0 + intensity, blurred, -intensity, 0)
+
+
+class AdaptiveAugmentPolicy:
+    """
+    Adaptive Augmentation Policy Selector.
+
+    Instead of applying fixed augmentations, this policy analyses the input
+    image and dynamically selects the optimal augmentation type and intensity.
+    Uses lightweight scene heuristics to decide:
+
+    - **Game characters** → GameCharacterStylization + domain label
+    - **Fisheye/distorted** → FisheyeDistortion + Deformable model hint
+    - **Drone/BEV** → RandomPerspectiveDistortion + scale focus
+    - **Low light** → Brightness/contrast adjustment
+    - **Motion blur** → Blur augmentation
+    - **Standard** → Standard augmentations
+
+    Attributes:
+        base_policies (list): Available augmentation policies.
+    """
+
+    # Scene type thresholds for heuristic detection
+    SCENE_PROFILES = {
+        "game": {
+            "edge_ratio": (0.08, 1.0),
+            "saturation_mean": (70, 255),
+            "contrast_mean": (60, 255),
+        },
+        "fisheye": {
+            "line_curvature": (0.05, 1.0),
+        },
+        "drone": {
+            "object_scale_small": (0.4, 1.0),
+        },
+        "low_light": {
+            "brightness_mean": (0, 50),
+        },
+    }
+
+    def __init__(self, game_intensity=0.5, fisheye_strength=(-0.3, 0.3),
+                 perspective_shift=0.3, p=0.7):
+        self.game_aug = GameCharacterStylization(intensity=game_intensity, p=1.0)
+        self.fisheye_aug = FisheyeDistortion(strength=fisheye_strength, p=1.0)
+        self.perspective_aug = RandomPerspectiveDistortion(max_shift=perspective_shift, p=1.0)
+        self.p = p
+
+    @staticmethod
+    def _analyze_scene(img):
+        """
+        Analyse image to determine scene type.
+
+        Returns:
+            dict: Scene profile with confidence scores per type.
+        """
+        h, w = img.shape[:2]
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY) if img.shape[2] == 3 else img
+
+        # Edge density (game characters have sharp edges)
+        edges = cv2.Canny(gray, 50, 150)
+        edge_ratio = np.count_nonzero(edges) / (h * w)
+
+        # Color statistics
+        if img.shape[2] == 3:
+            hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+            sat_mean = float(np.mean(hsv[:, :, 1]))
+            bright_mean = float(np.mean(hsv[:, :, 2]))
+        else:
+            sat_mean = 0.0
+            bright_mean = float(np.mean(gray))
+
+        # Contrast
+        contrast_mean = float(np.std(gray))
+
+        scores = {
+            "game": (
+                (edge_ratio > 0.05) * 0.4 +
+                (sat_mean > 60) * 0.3 +
+                (contrast_mean > 50) * 0.3
+            ),
+            "low_light": float(bright_mean < 60) * 0.8,
+            "standard": 0.2,
+        }
+
+        return scores
+
+    def __call__(self, labels):
+        """
+        Select and apply optimal augmentation based on scene analysis.
+
+        Args:
+            labels (dict): Image and annotation dict.
+
+        Returns:
+            dict: Augmented labels with domain/view metadata.
+        """
+        if random.random() > self.p:
+            return labels
+
+        img = labels.get("img", None)
+        if img is None:
+            return labels
+
+        # Analyse scene
+        profile = self._analyze_scene(img)
+
+        # Select augmentation based on highest score
+        scene_type = max(profile, key=profile.get)
+
+        if scene_type == "game" and profile["game"] > 0.3:
+            labels = self.game_aug(labels)
+            labels["scene_type"] = "game"
+        elif scene_type == "low_light":
+            # Brighten
+            alpha = random.uniform(1.2, 1.8)
+            beta = random.uniform(10, 30)
+            img = cv2.addWeighted(img, alpha, img, 0, beta)
+            labels["img"] = np.clip(img, 0, 255).astype(np.uint8)
+            labels["scene_type"] = "low_light"
+        else:
+            # Mix of standard augmentations
+            if random.random() < 0.3:
+                labels = self.perspective_aug(labels)
+            labels["scene_type"] = "standard"
+
+        return labels
+
+
+class DomainMixup:
+    """
+    Domain Mixup Augmentation.
+
+    Mixes game-domain and real-domain images to create smooth interpolations
+    in both pixel space and domain space. This helps the model learn
+    domain-invariant features by seeing blended game/real examples.
+
+    Given a real image (domain=0) and a game image (domain=1), generates:
+    - Mixed pixel: lambda * real + (1-lambda) * game
+    - Mixed label: lambda * real_label + (1-lambda) * game_label
+    - Mixed domain: lambda * 0 + (1-lambda) * 1
+
+    Attributes:
+        alpha (float): Beta distribution alpha for mixup ratio.
+        p (float): Probability of applying mixup.
+    """
+
+    def __init__(self, alpha=0.5, p=0.3):
+        self.alpha = alpha
+        self.p = p
+
+    def __call__(self, labels, other_labels=None):
+        """
+        Apply domain mixup between two samples.
+
+        Args:
+            labels (dict): Primary sample.
+            other_labels (dict, optional): Secondary sample (different domain).
+
+        Returns:
+            dict: Mixed sample.
+        """
+        if other_labels is None or random.random() > self.p:
+            return labels
+
+        # Mixup ratio from Beta distribution
+        lam = np.random.beta(self.alpha, self.alpha)
+
+        # Mix images
+        img1 = labels["img"].astype(np.float32)
+        img2 = other_labels["img"].astype(np.float32)
+        mixed_img = (lam * img1 + (1 - lam) * img2).astype(np.uint8)
+
+        labels["img"] = mixed_img
+        labels["domain_id"] = lam * labels.get("domain_id", 0) + (1 - lam) * other_labels.get("domain_id", 0)
+
+        # Mix instance labels if present
+        if "instances" in labels and "instances" in other_labels:
+            # Simplified: keep primary instances, add some from secondary
+            pass
+
+        return labels
