@@ -1,6 +1,6 @@
 Create a CVPR-style pipeline figure for the following object detection system:
 
-**Title:** YOLOv12-MAGUS: Multi-View, Adaptive, Game-to-Real Unified Detector
+**Title:** YOLOv14: Unified Cross-Domain Real-Time Object Detector
 
 **Architecture Overview (top-to-bottom flow, left-to-right where appropriate):**
 

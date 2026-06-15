@@ -1,5 +1,5 @@
-# YOLOv12-Panorama 🚀
-# YOLOv12 with Spherical Area-Attention (SphereAAttn) for 360°
+# YOLOv14-Panorama 🚀
+# YOLOv14 with Spherical Area-Attention (SphereAAttn) for 360°
 # panoramic images and CircularConv for wrap-aware convolutions.
 #
 # Features:
@@ -8,7 +8,7 @@
 # - Training with panoramic fisheye augmentation
 #
 # Usage:
-#   model = YOLO('yolov12-panorama.yaml')
+#   model = YOLO('YOLOv14-panorama.yaml')
 
 # Parameters
 nc: 80

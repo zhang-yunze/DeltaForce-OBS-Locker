@@ -1,5 +1,5 @@
-# YOLOv12-Adaptive 🧠🎯
-# YOLOv12 with Adaptive Augmentation + Domain Mixup.
+# YOLOv14-Adaptive 🧠🎯
+# YOLOv14 with Adaptive Augmentation + Domain Mixup.
 #
 # Combines ALL innovations:
 # - AdaptiveAugmentPolicy: auto-detects scene type and applies optimal aug
@@ -8,10 +8,10 @@
 # - DeformableA2C2f: handles geometric distortions on-the-fly
 #
 # The model itself decides which augmentation/view/distortion strategy
-# to use based on input analysis — truly adaptive detection.
+# to use based on input analysis �?truly adaptive detection.
 #
 # Usage:
-#   model = YOLO('ultralytics/cfg/models/v12/yolov12-adaptive.yaml')
+#   model = YOLO('ultralytics/cfg/models/v12/YOLOv14-adaptive.yaml')
 
 # Parameters
 nc: 80

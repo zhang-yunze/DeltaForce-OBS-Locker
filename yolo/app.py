@@ -1,8 +1,7 @@
 # --------------------------------------------------------
-# YOLOv12 Multi-View Demo App
+# YOLOv14 Multi-View Demo App
 # Supports: pinhole, fisheye, panoramic, drone/BEV, game character
-# detection with YOLOv12-Deformable, YOLOv12-MultiView,
-# YOLOv12-Game2Real, YOLOv12-Adaptive, YOLOv12-Panorama
+# detection with YOLOv14 variants
 # --------------------------------------------------------
 
 import gradio as gr
@@ -23,11 +22,11 @@ VIEW_TYPES = {
 
 # Available model configurations
 MODEL_OPTIONS = {
-    "YOLOv12n (Standard)": "yolov12n.pt",
-    "YOLOv12s (Standard)": "yolov12s.pt",
-    "YOLOv12m (Standard)": "yolov12m.pt",
-    "YOLOv12l (Standard)": "yolov12l.pt",
-    "YOLOv12x (Standard)": "yolov12x.pt",
+    "YOLOv14n (Standard)": "yolov12n.pt",
+    "YOLOv14s (Standard)": "yolov12s.pt",
+    "YOLOv14m (Standard)": "yolov12m.pt",
+    "YOLOv14l (Standard)": "yolov12l.pt",
+    "YOLOv14x (Standard)": "yolov12x.pt",
 }
 
 # Scene mode descriptions
@@ -91,7 +90,7 @@ def apply_game_stylization(image, intensity=0.3):
 def yolov12_inference(image, video, model_key, image_size, conf_threshold,
                       view_type, scene_mode, correction_strength,
                       game_style_intensity, panorama_mode):
-    """Run YOLOv12 inference with multi-view, game, and distortion support."""
+    """Run YOLOv14 inference with multi-view, game, and distortion support."""
     model_path = MODEL_OPTIONS.get(model_key, "yolov12s.pt")
     model = YOLO(model_path)
     view_id = VIEW_TYPES.get(view_type, 0)
@@ -165,11 +164,11 @@ def yolov12_inference(image, video, model_key, image_size, conf_threshold,
 
 def build_app():
     """Build the Gradio interface."""
-    with gr.Blocks(title="YOLOv12 - Multi-View & Game2Real Detection",
+    with gr.Blocks(title="YOLOv14 - Multi-View & Game2Real Detection",
                    css="footer {display:none !important}") as demo:
         gr.Markdown(
             """
-            # YOLOv12 Multi-View & Game2Real Object Detection
+            # YOLOv14 Multi-View & Game2Real Object Detection
             ### 🎯 Pinhole | Fisheye | Panorama | Drone/BEV | 🎮 Game Characters
 
             > **Game2Real**: Detects game characters (Delta Force, COD, PUBG) as real humans
@@ -191,7 +190,7 @@ def build_app():
                 model_id = gr.Dropdown(
                     label="Base Model",
                     choices=list(MODEL_OPTIONS.keys()),
-                    value="YOLOv12s (Standard)",
+                    value="YOLOv14s (Standard)",
                 )
 
                 # Scene Mode
@@ -313,9 +312,9 @@ def build_app():
         # Examples
         gr.Examples(
             examples=[
-                ["ultralytics/assets/bus.jpg", "YOLOv12s (Standard)", 640, 0.25,
+                ["ultralytics/assets/bus.jpg", "YOLOv14s (Standard)", 640, 0.25,
                  "Pinhole (Standard)", "Standard", 0.0, 0.0, False],
-                ["ultralytics/assets/zidane.jpg", "YOLOv12x (Standard)", 640, 0.25,
+                ["ultralytics/assets/zidane.jpg", "YOLOv14x (Standard)", 640, 0.25,
                  "Pinhole (Standard)", "Standard", 0.0, 0.0, False],
             ],
             fn=lambda img, *args: yolov12_inference(

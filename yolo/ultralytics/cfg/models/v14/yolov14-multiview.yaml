@@ -1,5 +1,5 @@
-# YOLOv12-MultiView 🚀
-# YOLOv12 with Multi-View Conditioning (ViewEmbedding) and
+# YOLOv14-MultiView 🚀
+# YOLOv14 with Multi-View Conditioning (ViewEmbedding) and
 # Adaptive Resolution Pyramid (DynamicScaleRouter).
 #
 # Designed for drone, BEV/satellite, ground-level, and mixed-view detection.
@@ -7,7 +7,7 @@
 # and CrossViewConsistencyLoss.
 #
 # Usage:
-#   model = YOLO('yolov12-multiview.yaml')
+#   model = YOLO('YOLOv14-multiview.yaml')
 
 # Parameters
 nc: 80  # number of classes
@@ -19,7 +19,7 @@ scales:
   l: [1.00, 1.00, 512]
   x: [1.00, 1.50, 512]
 
-# YOLOv12-MultiView backbone
+# YOLOv14-MultiView backbone
 backbone:
   # [from, repeats, module, args]
   - [-1, 1, Conv, [64, 3, 2]]                    # 0-P1/2
@@ -33,7 +33,7 @@ backbone:
   - [-1, 1, Conv, [1024, 3, 2]]                  # 8-P5/32
   - [-1, 4, A2C2f, [1024, True, 1]]              # 9
 
-# YOLOv12-MultiView head (with DynamicScaleRouter for adaptive resolution)
+# YOLOv14-MultiView head (with DynamicScaleRouter for adaptive resolution)
 head:
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
   - [[-1, 7], 1, Concat, [1]]                    # cat backbone P4
